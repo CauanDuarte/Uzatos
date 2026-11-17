@@ -1,0 +1,233 @@
+
+#include <TinyGPS++.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+
+// ========================
+// WIFI E SERVIDOR
+// ========================
+
+const char* ssid = "NOME_DO_WIFI";
+const char* password = "SENHA_DO_WIFI";
+
+const char* servidor =
+  "http://192.168.1.100:3000/api/localizacao";
+
+// ========================
+// GPS
+// ========================
+
+TinyGPSPlus gps;
+HardwareSerial GPS(2);
+
+// ========================
+// OLED
+// ========================
+
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET -1
+#define OLED_ADDRESS 0x3C
+
+Adafruit_SSD1306 display(
+  SCREEN_WIDTH,
+  SCREEN_HEIGHT,
+  &Wire,
+  OLED_RESET
+);
+
+// ========================
+// CONEXAO WIFI
+// ========================
+
+bool conectarWiFi() {
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+
+  Serial.println("Conectando ao Wi-Fi...");
+
+  int tentativas = 0;
+
+  while (WiFi.status() != WL_CONNECTED &&
+         tentativas < 20) {
+    delay(500);
+    Serial.print(".");
+    tentativas++;
+  }
+
+  Serial.println();
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("Wi-Fi conectado!");
+    Serial.print("IP do ESP32: ");
+    Serial.println(WiFi.localIP());
+    return true;
+  }
+
+  Serial.print("Falha na conexao. Status: ");
+  Serial.println(WiFi.status());
+
+  return false;
+}
+
+// ========================
+// SETUP
+// ========================
+
+void setup() {
+  Serial.begin(115200);
+
+  // GPS: RX 16, TX 17
+  GPS.begin(9600, SERIAL_8N1, 16, 17);
+
+  // OLED: SDA 21, SCL 22
+  Wire.begin(21, 22);
+
+  if (!display.begin(
+        SSD1306_SWITCHCAPVCC,
+        OLED_ADDRESS)) {
+    Serial.println("Erro ao iniciar OLED!");
+
+    while (true) {
+      delay(1000);
+    }
+  }
+
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  display.println("Iniciando...");
+  display.display();
+
+  bool conectado = conectarWiFi();
+
+  display.clearDisplay();
+  display.setCursor(0, 0);
+
+  if (conectado) {
+    display.println("Wi-Fi conectado!");
+    display.println(WiFi.localIP());
+  } else {
+    display.println("Falha no Wi-Fi");
+    display.println("Verifique a rede");
+  }
+
+  display.display();
+  delay(2000);
+}
+
+// ========================
+// ENVIA LOCALIZACAO
+// ========================
+
+void enviarLocalizacao(double latitude,
+                       double longitude) {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("Wi-Fi desconectado. Reconectando...");
+
+    WiFi.disconnect();
+    WiFi.begin(ssid, password);
+
+    return;
+  }
+
+  HTTPClient http;
+
+  http.begin(servidor);
+  http.addHeader("Content-Type", "application/json");
+  http.setTimeout(3000);
+
+  String json = "{";
+  json += "\"latitude\":";
+  json += String(latitude, 6);
+  json += ",\"longitude\":";
+  json += String(longitude, 6);
+  json += "}";
+
+  Serial.println("Enviando localizacao:");
+  Serial.println(json);
+
+  int codigoHTTP = http.POST(json);
+
+  Serial.print("Resposta HTTP: ");
+  Serial.println(codigoHTTP);
+
+  if (codigoHTTP > 0) {
+    Serial.println(http.getString());
+  } else {
+    Serial.println("Falha ao comunicar com o servidor.");
+  }
+
+  http.end();
+}
+
+// ========================
+// LOOP
+// ========================
+
+void loop() {
+  while (GPS.available() > 0) {
+    char c = GPS.read();
+
+    if (gps.encode(c)) {
+      if (gps.location.isUpdated() &&
+          gps.location.isValid()) {
+
+        double latitude = gps.location.lat();
+        double longitude = gps.location.lng();
+
+        Serial.print("Latitude: ");
+        Serial.println(latitude, 6);
+
+        Serial.print("Longitude: ");
+        Serial.println(longitude, 6);
+
+        Serial.print("Satelites: ");
+        Serial.println(gps.satellites.value());
+
+        Serial.println("--------------------");
+
+        // Atualiza OLED
+        display.clearDisplay();
+        display.setTextSize(1);
+        display.setTextColor(SSD1306_WHITE);
+
+        display.setCursor(0, 0);
+        display.println("GPS");
+
+        display.setCursor(0, 16);
+        display.print("LAT: ");
+        display.println(latitude, 6);
+
+        display.setCursor(0, 30);
+        display.print("LON: ");
+        display.println(longitude, 6);
+
+        display.setCursor(0, 44);
+        display.print("SAT: ");
+        display.println(gps.satellites.value());
+
+        display.display();
+
+        // Envia para o servidor
+        enviarLocalizacao(latitude, longitude);
+      }
+    }
+  }
+
+  // Se o Wi-Fi cair, tenta novamente
+  if (WiFi.status() != WL_CONNECTED) {
+    static unsigned long ultimaTentativa = 0;
+
+    if (millis() - ultimaTentativa >= 10000) {
+      ultimaTentativa = millis();
+      Serial.println("Tentando reconectar ao Wi-Fi...");
+      WiFi.disconnect();
+      WiFi.begin(ssid, password);
+    }
+  }
+}
